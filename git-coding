@@ -1,0 +1,254 @@
+#!/usr/bin/env ruby
+
+#custom functions
+class String
+  def author_str
+    self[/#{Regexp.escape("<")}(.*?)#{Regexp.escape("@")}/m, 1]
+  end
+end
+
+require 'pathname'
+def gitcheck()
+  Pathname.pwd.ascend {|p| return true if (p + ".git").directory? }
+  false
+end
+
+class String
+  def valid_integer?
+    true if Integer self rescue false
+  end
+end
+
+def colorize(text, color_code)
+  "\e[1m\e[#{color_code}m#{text}\e[0m"
+end
+
+def red(text); colorize(text, 31); end
+def green(text); colorize(text, 32); end
+def yellow(text); colorize(text, 33); end
+def blue(text); colorize(text, 34); end
+def magenta(text); colorize(text, 35); end
+def cyan(text); colorize(text, 36); end
+
+def usage()
+	puts
+	puts "  Searches in current directory for all git repositories and"
+	puts "  prints code lines modifications for authors accros all"
+	puts "  available repositories and for all branches"
+	puts 
+	puts "  Default behavior is: all code line modification for all"
+	puts "  authors in last week without fetching."
+	puts 
+	puts "  Usage: git coding <--since=?> <--author=?> <--fetch> <--team>"
+	puts 
+	puts "  Available options are:"
+	puts "      since   default is 1.weeks.ago, aditional 'ever'"
+	puts "      author  default is all e.g --author=alice,john"
+	puts "      fetch   default is false"
+	puts "      team    mislav, dino, nikola, ivan, kristian"
+	puts 
+	puts "  Author: Dino Pavić"
+	puts "  Corvus@2016"
+end
+
+def die(msg)
+  puts msg
+  exit
+end
+
+#variables
+author = nil
+state = :pre_author
+insertions = {}
+inserts = 0
+deletions = {}
+deletes = 0
+too_big = {}
+lines = {}
+commits = {}
+directories = Array.new
+
+#options
+authors_option = ""
+since_option = "--since=1.weeks.ago"
+since_formatted = "for last week"
+fetch_option = "false"
+
+if !ARGV.empty?
+	if ARGV[0] == "help"
+		usage()
+		die("")
+	end
+	
+	ARGV.each do |arg|
+		case
+		when !arg.include?('--')
+			die("  Invalid option")
+			
+		when arg.include?('team')
+			if authors_option != ""
+				die("  Invalid option")
+			end
+			authors_option = "--author=\\(dino.pavic\\)\\|\\(nikola.masic\\)\\|\\(mislav.stankovic\\)\\|\\(ivan.belfinger\\)\\|\\(kristian.markulin\\)"
+			
+		when arg.include?('author=')
+			if authors_option != ""
+				die("  Invalid option")
+			end
+			authors_str = arg.split('=')[1].to_s
+			if authors_str.empty?
+				die("  Invalid option")
+			end
+			
+			authors_option = "--author="
+			if authors_str.include?(',')
+				authors = authors_str.split(',')
+				for index in 0 ... authors.size
+				  authors[index] = "\\(#{authors[index]}\\)"
+				end				
+				authors_option += authors.join("\\|")
+			elsif
+				authors_option += authors_str
+			end		
+			
+		when arg.include?('since=')
+			since = arg.split('=')[1]
+			if since == "ever"
+				since_option = ""
+				since_formatted = "for all history"
+			else
+				since_option = arg
+				since_formatted = "for last " + since.gsub(".", " ").sub("ago", "")
+			end		
+		when arg.include?('fetch')
+			fetch_option = "true"
+			
+		else		
+			die("  Invalid option")
+		end			
+	end
+end
+
+
+puts "  Searching for git repositories in current directory..."
+
+if gitcheck()
+	directories.push(Dir.pwd)
+else
+	directories = Pathname.new(Dir.pwd).children.select { |c| c.directory? }.collect { |p| p.to_s }
+end
+
+puts
+puts "  Repositories found:"
+
+directories.each do |d|
+	Dir.chdir d
+	
+	if gitcheck()
+		puts "      " + cyan(d)
+		if fetch_option == "true"
+			puts "      Fetching..."
+			`git fetch --all --quiet`
+		end
+		
+		`git log --all --numstat --no-color #{authors_option} #{since_option}`.lines.each do |l|
+			case
+			when state == :pre_author && l =~ /Author: (.*)$/
+				author = $1.author_str				
+				inserts = 0
+				deletes = 0
+				insertions[author] ||= 0
+				deletions[author] ||= 0
+				lines[author] ||= 0
+				commits[author] ||= 0
+				too_big[author] ||= 0			
+				state = :post_author
+				
+			when state == :post_author && !l.include?("commit ")					
+				if (\
+				(l.include?('.cs') unless ( \
+					l.include?('.csproj') || \
+					l.include?('.css') || \
+					l.include?('Reference'))) \
+				|| l.include?('.as') \
+				|| l.include?('.bat') \
+				|| l.include?('.ps1') \
+				|| l.include?('.html') \
+				|| l.include?('.sql') \
+				|| l.include?('.java') \
+				|| l.include?('.js') \
+				|| l.include?('.jsp') \
+				|| l.include?('.py') \
+				|| (l.include?('.xml') unless (\
+					l.include?('Data/Configuration.xml') ||
+					l.include?('Corvus.xml'))) \
+				|| l.include?('.properties') \
+				|| l.include?('.impex'))
+					begin		
+						nums = l.split(" ")
+
+						if nums[0] != nil && nums[0].valid_integer? 				
+							inserts += Integer(nums[0])
+						end
+		
+						if nums[1] != nil && nums[1].valid_integer? 				
+							deletes += Integer(nums[1])
+						end
+						
+					rescue Exception => ex
+						puts "Error:#{l} "
+						puts ex.message
+					end		
+				end
+				
+			when state == :post_author && l.include?("commit ")
+				sums = false
+				if inserts < 100000											
+					sums = true
+				else					
+					too_big[author] += inserts
+					inserts = 0
+				end
+				
+				if deletes < 100000											
+					sums = true
+				else					
+					too_big[author] += deletes
+					deletes = 0
+				end
+				
+				if sums == true 
+					insertions[author] += inserts
+					deletions[author] += deletes
+					lines[author] += inserts + deletes					
+				end				
+				
+				commits[author] += 1
+				state = :pre_author
+			
+			end
+		end
+	end
+end
+
+remark = false
+puts 
+puts "  Showing statistics #{since_formatted}...\n\n"
+
+lines.sort_by { |a, c| -c }.each do |a, c|
+	puts red("  --- #{a} ---")
+	puts green("      + ") + "#{insertions[a]} insertions\n"
+	puts red("      - ") + "#{deletions[a]} deletions\n"
+	puts yellow("      ~ ") + "#{commits[a]} commits"
+	if too_big[a] > 0 
+		puts magenta("      * ") + "#{too_big[a]} lines discarded"
+		remark = true
+	end
+	puts "\n"
+end
+
+if remark == true
+	puts "  ( * max 1150 lines per commit )"
+end
+
+
